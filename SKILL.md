@@ -63,6 +63,8 @@ For each opening, assign a **fit score of 1–5** using the rubric in `reference
 
 De-duplicate against anything the user already has, then deliver results **as the interactive tracker artifact**. Read `references/tracker-template.md` for how to generate it — it is a self-contained React artifact with persistent storage, status tracking, an editable search profile, a portal selector, and a built-in "search again" agent so the user can keep hunting on their own after this session.
 
+**If a tracker artifact already exists earlier in this conversation, update that same artifact — do not create a new one.** The tracker's persistence (`window.storage`) is scoped to that specific artifact; creating a fresh artifact block starts empty storage and silently discards everything the person already tracked, even though it looks like "the same tracker" to them. Only create a new artifact the first time in a conversation.
+
 Always end by pointing the user to the tracker and reminding them to verify each link before applying (postings close).
 
 ---
@@ -73,3 +75,4 @@ Always end by pointing the user to the tracker and reminding them to verify each
 - **Be honest about fit.** Do not score everything a 5. A useful tracker is discriminating.
 - **Respect cost and eligibility.** Don't push paid portals or roles the user can't legally take without flagging it.
 - **The person owns decisions.** Present and rank; let them choose what to pursue.
+- **Persistence is per-conversation, not per-person.** The tracker only survives closing and reopening *this same conversation* — a new chat starts a new artifact with empty storage. If the person is moving to a new conversation (or switching devices), tell them to use the tracker's "Exportar respaldo" button first, then "Importar respaldo" in the new one to carry their state over.

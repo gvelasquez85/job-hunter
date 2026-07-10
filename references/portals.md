@@ -16,6 +16,11 @@ Default set of job portals for the search. All are free to apply unless marked o
 | Torre.ai | torre.ai | LATAM-focused, profile-based matching |
 | Computrabajo | co.computrabajo.com | Largest job board in LATAM; strong in Colombia |
 | elempleo | elempleo.com | Leading job board in Colombia |
+| TrabajosYa | trabajosya.com | Trabajando.com group; strong in Colombia, Peru, Ecuador |
+| Magneto365 | magneto365.com | Colombia-focused job board |
+| Bumeran | bumeran.com | Strong in Argentina, Mexico, Peru, Chile |
+| Indeed | indeed.com | Massive global aggregator; free to search and apply |
+| Glassdoor | glassdoor.com | Global, includes salary/company reviews alongside listings |
 | Upwork | upwork.com | Freelance/contract; good for niche stacks |
 
 ## Free — off by default (enable if relevant)
@@ -26,6 +31,7 @@ Default set of job portals for the search. All are free to apply unless marked o
 | Built In | builtin.com | US tech hubs |
 | Himalayas | himalayas.app | Remote-first |
 | Remote OK | remoteok.com | Remote aggregator |
+| ZipRecruiter | ziprecruiter.com | Strong in the US; global reach growing |
 
 ## Paid to apply — off by default, flag clearly
 

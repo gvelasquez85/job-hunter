@@ -47,6 +47,12 @@ const PORTALS = [
   { id: "torre", label: "Torre.ai", hint: "torre.ai · LATAM", paid: false, on: true },
   { id: "computrabajo", label: "Computrabajo", hint: "co.computrabajo.com · LATAM", paid: false, on: true },
   { id: "elempleo", label: "elempleo", hint: "elempleo.com · Colombia", paid: false, on: true },
+  { id: "trabajosya", label: "TrabajosYa", hint: "trabajosya.com · LATAM", paid: false, on: true },
+  { id: "magneto365", label: "Magneto365", hint: "magneto365.com · Colombia", paid: false, on: true },
+  { id: "bumeran", label: "Bumeran", hint: "bumeran.com · Argentina/México/Perú/Chile", paid: false, on: true },
+  { id: "indeed", label: "Indeed", hint: "indeed.com · global", paid: false, on: true },
+  { id: "glassdoor", label: "Glassdoor", hint: "glassdoor.com · global", paid: false, on: true },
+  { id: "ziprecruiter", label: "ZipRecruiter", hint: "ziprecruiter.com · EE.UU./global", paid: false, on: false },
   { id: "upwork", label: "Upwork", hint: "upwork.com · freelance", paid: false, on: true },
   { id: "ycombinator", label: "Y Combinator Jobs", hint: "ycombinator.com/jobs", paid: false, on: false },
   { id: "builtin", label: "Built In", hint: "builtin.com", paid: false, on: false },
@@ -114,7 +120,9 @@ export default function JobAgent() {
   const emptyManual = { titulo: "", empresa: "", ubicacion: "", salario: "", fit: 3, fuente: "", url: "", nota: "" };
   const [manual, setManual] = useState(emptyManual);
   const [models, setModels] = useState([]);
+  const [importError, setImportError] = useState("");
   const logRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     loadState().then((s) => {
@@ -188,6 +196,43 @@ export default function JobAgent() {
     persist({ ...state, jobs: [newJob, ...state.jobs] });
     setManual(emptyManual);
     setShowManual(false);
+  };
+
+  // Export/import a full backup so the tracker can be carried into a new conversation —
+  // window.storage only persists within the artifact it belongs to, not across chats.
+  const exportBackup = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `job-hunter-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importBackup = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        if (!Array.isArray(parsed.jobs)) throw new Error("El archivo no tiene el formato esperado (falta 'jobs').");
+        persist({
+          jobs: parsed.jobs,
+          profile: parsed.profile || DEFAULT_PROFILE,
+          lastSearch: parsed.lastSearch || null,
+          portals: Array.isArray(parsed.portals) ? parsed.portals : PORTALS.filter((p) => p.on).map((p) => p.id),
+          maxTokens: parsed.maxTokens || 4000,
+          model: parsed.model || null,
+        });
+        setImportError("");
+      } catch (e) {
+        setImportError("No se pudo leer el respaldo: " + (e.message || "archivo inválido"));
+      }
+    };
+    reader.onerror = () => setImportError("No se pudo leer el archivo.");
+    reader.readAsText(file);
   };
 
   const pushLog = (m) => setLog((l) => [...l, m]);
@@ -405,6 +450,32 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
 
         {tab === "tracker" && (
           <>
+            {/* Backup: window.storage only persists within this artifact — export/import
+                is how the tracker survives moving into a new conversation. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+              <button onClick={exportBackup} style={{
+                background: "none", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                color: C.slate, fontFamily: font, padding: 0, textDecoration: "underline", textUnderlineOffset: 3,
+              }}>Exportar respaldo</button>
+              <button onClick={() => fileInputRef.current && fileInputRef.current.click()} style={{
+                background: "none", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                color: C.slate, fontFamily: font, padding: 0, textDecoration: "underline", textUnderlineOffset: 3,
+              }}>Importar respaldo</button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) importBackup(e.target.files[0]);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+            {importError && (
+              <div style={{ fontSize: 12, color: C.red, marginBottom: 12 }}>{importError}</div>
+            )}
+
             {/* Filters */}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
               {["Todas", ...STATUSES].map((f) => (

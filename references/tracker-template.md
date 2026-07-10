@@ -4,7 +4,7 @@ The final deliverable is an interactive React artifact: a job tracker with a bui
 
 ## What the tracker does
 
-- **Tracker tab**: cards for each opening with title, company, location, salary, a 1–5 fit bar, source, and direct link. Tapping the status pill cycles the opening through `Nueva → Por aplicar → Aplicada → Entrevista → Oferta → Descartada`. Filter chips by status. Per-card notes. All state persists across sessions via `window.storage`.
+- **Tracker tab**: cards for each opening with title, company, location, salary, a 1–5 fit bar, source, and direct link. Tapping the status pill cycles the opening through `Nueva → Por aplicar → Aplicada → Entrevista → Oferta → Descartada`. Filter chips by status. Per-card notes. A manual "+ Agregar oferta manualmente" form for openings found outside the agent. "Exportar respaldo" / "Importar respaldo" buttons download/restore the full state as JSON. All state persists via `window.storage` **for the lifetime of this specific artifact** — see the persistence note below.
 - **Search agent tab**: an editable search profile, a portal selector (paid portals marked and off by default), and a "search now" button that calls the Anthropic API with web search to find fresh openings, filters duplicates, and lets the user add results with one tap.
 
 ## How to customize it for the person
@@ -27,6 +27,10 @@ Optionally adjust the `PORTALS` array if the user chose a custom portal set.
 - The search agent calls the Anthropic API at `https://api.anthropic.com/v1/messages` with the `web_search_20250305` tool. No API key is passed — the runtime handles it. The model is not hardcoded: on load, the artifact queries `GET https://api.anthropic.com/v1/models` to list what the running account can actually call, and presents a dropdown (falling back to `FALLBACK_MODELS` if that call fails). `max_tokens` defaults to 4000 and is adjustable via the token-budget slider (1000–8000).
 - The API response is parsed tolerantly: it first tries the full JSON array, then salvages individual objects, then (if needed) makes a second no-search call to reformat prose into JSON, and finally preserves the raw text so the user never loses what the agent found.
 - Keep `max_tokens` at 4000 or higher. The original bug that dropped all results was a 1000-token cap truncating the JSON.
+
+## Persistence is scoped to this artifact, not the person
+
+`window.storage` persists across page reloads **of this exact artifact** (closing and reopening the same conversation). It does **not** carry over to a new conversation — a fresh artifact block gets fresh, empty storage, even though from the person's point of view it's "the same tracker." This is why SKILL.md says to update the existing artifact in place rather than regenerating one every turn, and why the artifact ships its own export/import (JSON download/upload) as the fallback for moving a tracker between conversations or devices.
 
 ## Delivering
 

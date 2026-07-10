@@ -45,6 +45,8 @@ const PORTALS = [
   { id: "workingnomads", label: "Working Nomads", hint: "workingnomads.com", paid: false, on: true },
   { id: "getonboard", label: "Get on Board", hint: "getonbrd.com · LATAM", paid: false, on: true },
   { id: "torre", label: "Torre.ai", hint: "torre.ai · LATAM", paid: false, on: true },
+  { id: "computrabajo", label: "Computrabajo", hint: "co.computrabajo.com · LATAM", paid: false, on: true },
+  { id: "elempleo", label: "elempleo", hint: "elempleo.com · Colombia", paid: false, on: true },
   { id: "upwork", label: "Upwork", hint: "upwork.com · freelance", paid: false, on: true },
   { id: "ycombinator", label: "Y Combinator Jobs", hint: "ycombinator.com/jobs", paid: false, on: false },
   { id: "builtin", label: "Built In", hint: "builtin.com", paid: false, on: false },
@@ -68,7 +70,7 @@ async function loadState() {
     const r = await window.storage.get(STORAGE_KEY);
     if (r && r.value) return JSON.parse(r.value);
   } catch (e) { /* first run */ }
-  return { jobs: SEED, profile: DEFAULT_PROFILE, lastSearch: null, portals: PORTALS.filter((p) => p.on).map((p) => p.id), model: null };
+  return { jobs: SEED, profile: DEFAULT_PROFILE, lastSearch: null, portals: PORTALS.filter((p) => p.on).map((p) => p.id), maxTokens: 4000, model: null };
 }
 async function saveState(state) {
   try { await window.storage.set(STORAGE_KEY, JSON.stringify(state)); } catch (e) { console.error(e); }
@@ -108,12 +110,16 @@ export default function JobAgent() {
   const [error, setError] = useState("");
   const [editingProfile, setEditingProfile] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [showManual, setShowManual] = useState(false);
+  const emptyManual = { titulo: "", empresa: "", ubicacion: "", salario: "", fit: 3, fuente: "", url: "", nota: "" };
+  const [manual, setManual] = useState(emptyManual);
   const [models, setModels] = useState([]);
   const logRef = useRef(null);
 
   useEffect(() => {
     loadState().then((s) => {
       if (!s.portals) s.portals = PORTALS.filter((p) => p.on).map((p) => p.id);
+      if (!s.maxTokens) s.maxTokens = 4000;
       if (!s.model) s.model = null;
       setState(s);
     });
@@ -168,12 +174,83 @@ export default function JobAgent() {
     setFound(found.filter((f) => f !== job));
   };
 
+  const submitManual = () => {
+    if (!manual.titulo.trim() || !manual.empresa.trim()) return;
+    const newJob = {
+      ...manual,
+      titulo: manual.titulo.trim(),
+      empresa: manual.empresa.trim(),
+      fit: Math.max(1, Math.min(5, Number(manual.fit) || 3)),
+      fuente: manual.fuente.trim() || "Manual",
+      id: uid(),
+      status: "Nueva",
+    };
+    persist({ ...state, jobs: [newJob, ...state.jobs] });
+    setManual(emptyManual);
+    setShowManual(false);
+  };
+
   const pushLog = (m) => setLog((l) => [...l, m]);
 
   const togglePortal = (id) => {
     const has = state.portals.includes(id);
     const portals = has ? state.portals.filter((p) => p !== id) : [...state.portals, id];
     persist({ ...state, portals });
+  };
+
+  // Robust wrapper around the Anthropic API: validates HTTP status, guards
+  // against non-JSON bodies, retries transient failures, and surfaces clear errors.
+  const callAPI = async (payload, onRetry) => {
+    const attempts = 3;
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+      let response;
+      try {
+        response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (netErr) {
+        lastErr = new Error("No se pudo conectar con el servicio.");
+        if (i < attempts - 1) {
+          if (onRetry) onRetry(i + 1);
+          await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+          continue;
+        }
+        throw new Error("No se pudo conectar tras varios intentos. Recarga el artifact e intenta de nuevo; si sigue, prueba en una pestaña sin bloqueadores.");
+      }
+
+      const raw = await response.text();
+
+      // Retry once on transient server-side statuses
+      if ((response.status === 429 || response.status >= 500) && i < attempts - 1) {
+        lastErr = new Error(`HTTP ${response.status}`);
+        if (onRetry) onRetry(i + 1);
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        continue;
+      }
+
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        throw new Error(
+          `Respuesta inesperada del servicio (${response.status}). ` +
+          (raw ? `Detalle: ${raw.slice(0, 160)}` : "Sin cuerpo de respuesta.")
+        );
+      }
+
+      if (!response.ok || data.error) {
+        const msg = (data.error && (data.error.message || data.error.type)) || `HTTP ${response.status}`;
+        throw new Error(`El servicio devolvió un error: ${msg}`);
+      }
+      if (!Array.isArray(data.content)) {
+        throw new Error("La respuesta no trae contenido procesable. Intenta de nuevo.");
+      }
+      return data;
+    }
+    throw lastErr || new Error("Error de conexión.");
   };
 
   // Tolerant extraction of an array of job objects from arbitrary model text
@@ -227,22 +304,23 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
 
     try {
       pushLog(`Buscando en ${chosen.length} portal(es) seleccionado(s)…`);
+      pushLog(`Presupuesto de respuesta: ${state.maxTokens} tokens.`);
       pushLog("El agente está buscando en la web (esto puede tardar 1-2 minutos)…");
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          max_tokens: 4000,
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
-      });
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message || "Error de la API");
+
+      const data = await callAPI({
+        model,
+        max_tokens: state.maxTokens,
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      }, (n) => pushLog(`Reintentando conexión (intento ${n + 1})…`));
 
       const searches = (data.content || []).filter((b) => b.type === "server_tool_use" || b.type === "tool_use").length;
       if (searches > 0) pushLog(`Realizó ${searches} búsqueda(s) en la web.`);
+
+      const stop = data.stop_reason;
+      if (stop === "max_tokens") {
+        pushLog("⚠ La respuesta se cortó por límite de tokens. Sube el presupuesto para resultados completos.");
+      }
 
       const text = (data.content || [])
         .filter((b) => b.type === "text")
@@ -255,23 +333,18 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
       // If parsing failed but we got prose, ask the model to reformat (no search, cheap)
       if (arr.length === 0 && text.trim().length > 0) {
         pushLog("Reformateando la respuesta del agente…");
-        const fix = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            max_tokens: 4000,
-            messages: [{ role: "user", content: `Convierte el siguiente texto en un array JSON válido de ofertas de empleo. Responde SÓLO con el array [ ... ], sin texto adicional. Cada objeto: {"titulo":"","empresa":"","ubicacion":"","salario":"","fit":4,"fuente":"","url":"","nota":""}.\n\nTEXTO:\n${text}` }],
-          }),
+        const fixData = await callAPI({
+          model,
+          max_tokens: state.maxTokens,
+          messages: [{ role: "user", content: `Convierte el siguiente texto en un array JSON válido de ofertas de empleo. Responde SÓLO con el array [ ... ], sin texto adicional. Cada objeto: {"titulo":"","empresa":"","ubicacion":"","salario":"","fit":4,"fuente":"","url":"","nota":""}.\n\nTEXTO:\n${text}` }],
         });
-        const fixData = await fix.json();
         const fixText = (fixData.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
         arr = extractJobs(fixText);
       }
 
       if (arr.length === 0) {
         // Preserve whatever the agent said so the user can see it
-        persist({ ...state, lastSearch: new Date().toISOString(), lastRaw: text.slice(0, 4000) });
+        persist({ ...state, lastSearch: new Date().toISOString(), lastRaw: text.slice(0, 4000) || "(el agente no devolvió texto)" });
         pushLog("No se pudieron estructurar resultados. Abajo puedes ver el texto crudo que trajo el agente.");
         setError("El agente buscó pero no devolvió un formato limpio. Revisa el texto crudo o intenta de nuevo.");
         return;
@@ -344,6 +417,84 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
                   {f}{f !== "Todas" ? ` · ${counts[f]}` : ""}
                 </button>
               ))}
+            </div>
+
+            {/* Add manual */}
+            <div style={{ marginBottom: 16 }}>
+              {!showManual ? (
+                <button onClick={() => setShowManual(true)} style={{
+                  background: C.card, border: `1px dashed ${C.navy}`, color: C.navy, cursor: "pointer",
+                  borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 600, fontFamily: font, width: "100%",
+                }}>+ Agregar oferta manualmente</button>
+              ) : (
+                <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: C.slate, marginBottom: 12 }}>
+                    Nueva oferta manual
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {[
+                      ["titulo", "Cargo *", "Ej. AI Automation Engineer"],
+                      ["empresa", "Empresa *", "Ej. Nombre de la empresa"],
+                      ["ubicacion", "Ubicación / modo", "Ej. Remoto · Colombia"],
+                      ["salario", "Salario (opcional)", "Ej. $4,000 USD/mes"],
+                      ["fuente", "Fuente / portal", "Ej. LinkedIn, elempleo"],
+                      ["url", "Link a la oferta", "https://…"],
+                    ].map(([k, label, ph]) => (
+                      <div key={k} style={{ gridColumn: (k === "url" || k === "nota") ? "1 / -1" : "auto" }}>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: "block", marginBottom: 4 }}>{label}</label>
+                        <input
+                          value={manual[k]}
+                          onChange={(e) => setManual({ ...manual, [k]: e.target.value })}
+                          placeholder={ph}
+                          style={{
+                            width: "100%", boxSizing: "border-box", fontFamily: font, fontSize: 13,
+                            border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px", color: C.ink, background: C.bg,
+                          }}
+                        />
+                      </div>
+                    ))}
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: "block", marginBottom: 4 }}>Nota (opcional)</label>
+                      <textarea
+                        value={manual.nota}
+                        onChange={(e) => setManual({ ...manual, nota: e.target.value })}
+                        rows={2}
+                        placeholder="Por qué encaja, contacto, próximos pasos…"
+                        style={{
+                          width: "100%", boxSizing: "border-box", fontFamily: font, fontSize: 13,
+                          border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px", color: C.ink, background: C.bg, resize: "vertical",
+                        }}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: C.slate }}>Ajuste:</label>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <button key={n} onClick={() => setManual({ ...manual, fit: n })} style={{
+                            width: 28, height: 28, borderRadius: 6, cursor: "pointer", fontFamily: font, fontSize: 13, fontWeight: 700,
+                            border: `1px solid ${manual.fit >= n ? C.navy : C.line}`,
+                            background: manual.fit >= n ? C.navy : C.card,
+                            color: manual.fit >= n ? "#fff" : C.slate,
+                          }}>{n}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                    <button onClick={submitManual} disabled={!manual.titulo.trim() || !manual.empresa.trim()} style={{
+                      background: (!manual.titulo.trim() || !manual.empresa.trim()) ? C.slate : C.green,
+                      color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px",
+                      fontSize: 13, fontWeight: 700, fontFamily: font,
+                      cursor: (!manual.titulo.trim() || !manual.empresa.trim()) ? "not-allowed" : "pointer",
+                    }}>Guardar oferta</button>
+                    <button onClick={() => { setShowManual(false); setManual(emptyManual); }} style={{
+                      background: "none", border: "none", color: C.slate, cursor: "pointer", fontSize: 13, fontFamily: font, fontWeight: 600,
+                    }}>Cancelar</button>
+                    <div style={{ flex: 1 }} />
+                    <span style={{ fontSize: 11, color: C.slate, alignSelf: "center" }}>* obligatorio</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Job cards */}
@@ -489,6 +640,44 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
               </select>
               <div style={{ fontSize: 12, color: C.slate, marginTop: 8 }}>
                 Modelos disponibles en la cuenta que ejecuta este tracker.
+              </div>
+            </div>
+
+            {/* Token budget */}
+            <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: C.slate }}>
+                  Presupuesto de tokens
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.navy }}>{state.maxTokens.toLocaleString()} tokens</span>
+              </div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+                Cuánto puede "escribir" el agente por búsqueda. Más tokens = respuestas más completas pero mayor costo. Recomendado: 4.000.
+              </div>
+              <input
+                type="range" min={1000} max={8000} step={500}
+                value={state.maxTokens}
+                onChange={(e) => persist({ ...state, maxTokens: Number(e.target.value) })}
+                style={{ width: "100%", accentColor: C.navy, cursor: "pointer" }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                <span style={{ fontSize: 11, color: C.slate }}>1.000 · mínimo</span>
+                <span style={{ fontSize: 11, color: C.slate }}>8.000 · máximo</span>
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+                {[
+                  { v: 2000, l: "Económico" },
+                  { v: 4000, l: "Equilibrado" },
+                  { v: 6000, l: "Completo" },
+                ].map((p) => (
+                  <button key={p.v} onClick={() => persist({ ...state, maxTokens: p.v })} style={{
+                    flex: 1, cursor: "pointer", fontFamily: font, fontSize: 12, fontWeight: 600,
+                    padding: "7px 0", borderRadius: 8,
+                    border: `1px solid ${state.maxTokens === p.v ? C.navy : C.line}`,
+                    background: state.maxTokens === p.v ? C.navySoft : C.card,
+                    color: state.maxTokens === p.v ? C.navy : C.slate,
+                  }}>{p.l}<div style={{ fontSize: 10, fontWeight: 500, marginTop: 1 }}>{p.v.toLocaleString()}</div></button>
+                ))}
               </div>
             </div>
 

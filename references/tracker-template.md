@@ -24,7 +24,7 @@ Optionally adjust the `PORTALS` array if the user chose a custom portal set.
 ## Technical notes (keep these intact)
 
 - The artifact uses `window.storage` for persistence — **do not** substitute `localStorage`/`sessionStorage`; they are not supported in the artifact runtime.
-- The search agent calls the Anthropic API at `https://api.anthropic.com/v1/messages` with `max_tokens: 4000` and the `web_search_20250305` tool. No API key is passed — the runtime handles it. The model is not hardcoded: on load, the artifact queries `GET https://api.anthropic.com/v1/models` to list what the running account can actually call, and presents a dropdown (falling back to a small hardcoded list if that call fails). Update `FALLBACK_MODELS` in the template as new model IDs ship.
+- The search agent calls the Anthropic API at `https://api.anthropic.com/v1/messages` with the `web_search_20250305` tool. No API key is passed — the runtime handles it. The model is not hardcoded: on load, the artifact queries `GET https://api.anthropic.com/v1/models` to list what the running account can actually call, and presents a dropdown (falling back to `FALLBACK_MODELS` if that call fails). `max_tokens` defaults to 4000 and is adjustable via the token-budget slider (1000–8000).
 - The API response is parsed tolerantly: it first tries the full JSON array, then salvages individual objects, then (if needed) makes a second no-search call to reformat prose into JSON, and finally preserves the raw text so the user never loses what the agent found.
 - Keep `max_tokens` at 4000 or higher. The original bug that dropped all results was a 1000-token cap truncating the JSON.
 

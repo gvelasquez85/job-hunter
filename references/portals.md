@@ -14,6 +14,8 @@ Default set of job portals for the search. All are free to apply unless marked o
 | Working Nomads | workingnomads.com | Aggregator, good coverage |
 | Get on Board | getonbrd.com | Strong in LATAM |
 | Torre.ai | torre.ai | LATAM-focused, profile-based matching |
+| Computrabajo | co.computrabajo.com | Largest job board in LATAM; strong in Colombia |
+| elempleo | elempleo.com | Leading job board in Colombia |
 | Upwork | upwork.com | Freelance/contract; good for niche stacks |
 
 ## Free — off by default (enable if relevant)

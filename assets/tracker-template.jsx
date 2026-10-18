@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Component } from "react";
 
 // ---------- Design tokens ----------
 const C = {
@@ -70,16 +70,101 @@ const SEED = [
 // ---------- helpers ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
 const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+const DEFAULT_PORTAL_IDS = PORTALS.filter((p) => p.on).map((p) => p.id);
+
+// Coerces one job entry into a safe shape. Drops entries with no title and no
+// company at all (junk), so a corrupted or hand-edited backup can't crash the
+// tracker on render — every field below is guaranteed to be the right type.
+function normalizeJob(j) {
+  if (!j || typeof j !== "object") return null;
+  const titulo = String(j.titulo || "").trim();
+  const empresa = String(j.empresa || "").trim();
+  if (!titulo && !empresa) return null;
+  return {
+    id: j.id || uid(),
+    titulo: titulo || "(sin título)",
+    empresa: empresa || "(sin empresa)",
+    ubicacion: String(j.ubicacion || ""),
+    salario: String(j.salario || ""),
+    fit: Math.max(1, Math.min(5, Number(j.fit) || 3)),
+    fuente: String(j.fuente || ""),
+    url: String(j.url || ""),
+    nota: String(j.nota || ""),
+    status: STATUSES.includes(j.status) ? j.status : "Nueva",
+  };
+}
+
+// Coerces a whole state object (from storage or an imported backup) into a
+// guaranteed-safe shape, so a corrupted read or a hand-edited backup degrades
+// gracefully instead of crashing the artifact on the next render.
+function normalizeState(raw) {
+  const safe = raw && typeof raw === "object" ? raw : {};
+  const jobs = Array.isArray(safe.jobs) ? safe.jobs.map(normalizeJob).filter(Boolean) : SEED;
+  const portals = Array.isArray(safe.portals) && safe.portals.length > 0 ? safe.portals : DEFAULT_PORTAL_IDS;
+  return {
+    jobs: jobs.length > 0 ? jobs : SEED,
+    profile: typeof safe.profile === "string" && safe.profile.trim() ? safe.profile : DEFAULT_PROFILE,
+    lastSearch: safe.lastSearch || null,
+    lastRaw: safe.lastRaw || null,
+    portals,
+    maxTokens: Number.isFinite(safe.maxTokens) ? Math.max(1000, Math.min(8000, safe.maxTokens)) : 4000,
+    model: typeof safe.model === "string" && safe.model ? safe.model : null,
+  };
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+}
 
 async function loadState() {
   try {
-    const r = await window.storage.get(STORAGE_KEY);
-    if (r && r.value) return JSON.parse(r.value);
-  } catch (e) { /* first run */ }
-  return { jobs: SEED, profile: DEFAULT_PROFILE, lastSearch: null, portals: PORTALS.filter((p) => p.on).map((p) => p.id), maxTokens: 4000, model: null };
+    const r = await withTimeout(window.storage.get(STORAGE_KEY), 6000);
+    if (r && r.value) return normalizeState(JSON.parse(r.value));
+  } catch (e) { /* first run, corrupted data, or storage timed out — fall through to defaults */ }
+  return normalizeState(null);
 }
 async function saveState(state) {
   try { await window.storage.set(STORAGE_KEY, JSON.stringify(state)); } catch (e) { console.error(e); }
+}
+
+// Catches any unexpected render error so the artifact never goes to a dead
+// blank page — saved data lives in window.storage independently of this.
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          minHeight: "100vh", background: "#FAFAF8", display: "flex",
+          alignItems: "center", justifyContent: "center", padding: 24,
+          fontFamily: "'Avenir Next', 'Segoe UI', ui-sans-serif, system-ui, sans-serif",
+        }}>
+          <div style={{ maxWidth: 380, textAlign: "center" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#1C2430", marginBottom: 8 }}>
+              Algo salió mal mostrando el tracker
+            </div>
+            <div style={{ fontSize: 13, color: "#6B7686", marginBottom: 16, lineHeight: 1.5 }}>
+              Tus datos guardados no se perdieron. Intenta recargar el artifact.
+            </div>
+            <button onClick={() => window.location.reload()} style={{
+              background: "#1F3A5F", color: "#fff", border: "none", borderRadius: 8,
+              padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+            }}>Recargar</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function FitBar({ n }) {
@@ -106,7 +191,7 @@ function StatusPill({ status, onNext }) {
   );
 }
 
-export default function JobAgent() {
+function JobAgentInner() {
   const [state, setState] = useState(null);
   const [tab, setTab] = useState("tracker");
   const [filter, setFilter] = useState("Todas");
@@ -125,12 +210,7 @@ export default function JobAgent() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    loadState().then((s) => {
-      if (!s.portals) s.portals = PORTALS.filter((p) => p.on).map((p) => p.id);
-      if (!s.maxTokens) s.maxTokens = 4000;
-      if (!s.model) s.model = null;
-      setState(s);
-    });
+    loadState().then(setState);
   }, []);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log]);
 
@@ -217,15 +297,12 @@ export default function JobAgent() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(reader.result);
-        if (!Array.isArray(parsed.jobs)) throw new Error("El archivo no tiene el formato esperado (falta 'jobs').");
-        persist({
-          jobs: parsed.jobs,
-          profile: parsed.profile || DEFAULT_PROFILE,
-          lastSearch: parsed.lastSearch || null,
-          portals: Array.isArray(parsed.portals) ? parsed.portals : PORTALS.filter((p) => p.on).map((p) => p.id),
-          maxTokens: parsed.maxTokens || 4000,
-          model: parsed.model || null,
-        });
+        if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.jobs)) {
+          throw new Error("El archivo no tiene el formato esperado (falta 'jobs').");
+        }
+        // Individual malformed jobs/fields are tolerated and cleaned up here —
+        // only reject files that aren't a job-hunter backup at all.
+        persist(normalizeState(parsed));
         setImportError("");
       } catch (e) {
         setImportError("No se pudo leer el respaldo: " + (e.message || "archivo inválido"));
@@ -833,5 +910,13 @@ Donde fit es 1-5 (ajuste al perfil), fuente es el portal, url es el link directo
         )}
       </div>
     </div>
+  );
+}
+
+export default function JobAgent() {
+  return (
+    <ErrorBoundary>
+      <JobAgentInner />
+    </ErrorBoundary>
   );
 }
